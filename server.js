@@ -8,6 +8,7 @@ dotenv.config();
 
 // Route files
 const authRoutes = require("./routes/authRoutes");
+const bookRoutes = require("./routes/bookRoutes");
 
 // Error middleware
 const errorHandler = require("./middleware/errorMiddleware");
@@ -23,6 +24,7 @@ app.use(cors());
 
 // Mount routes
 app.use("/api/auth", authRoutes);
+app.use("/api/book", bookRoutes);
 
 // Root route
 app.get("/", (req, res) => {
