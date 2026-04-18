@@ -1,5 +1,38 @@
-const app = require("./src/app");
 const connectDB = require("./src/config/database");
+const express = require("express");
+const cors = require("cors");
+const dotenv = require("dotenv");
+
+// Load env vars
+dotenv.config();
+
+// Route files
+const authRoutes = require("./routes/authRoutes");
+
+// Error middleware
+const errorHandler = require("./middleware/errorMiddleware");
+
+const app = express();
+
+// Body parser
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Enable CORS
+app.use(cors());
+
+// Mount routes
+app.use("/api/auth", authRoutes);
+
+// Root route
+app.get("/", (req, res) => {
+  res.json({ message: "Welcome to Library Management System API" });
+});
+
+// Error handler middleware
+app.use(errorHandler);
+
+module.exports = app;
 
 // Connect to database
 connectDB();
