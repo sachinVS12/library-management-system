@@ -26,6 +26,7 @@ app.use(cors());
 // Mount routes
 app.use("/api/auth", authRoutes);
 app.use("/api/book", bookRoutes);
+app.use("/api/borrow", borrowRoutes);
 
 // Root route
 app.get("/", (req, res) => {
