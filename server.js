@@ -9,6 +9,7 @@ dotenv.config();
 // Route files
 const authRoutes = require("./routes/authRoutes");
 const bookRoutes = require("./routes/bookRoutes");
+const borrowRoutes = require("./routes/borrowRoutes");
 
 // Error middleware
 const errorHandler = require("./middleware/errorMiddleware");
