@@ -1,5 +1,7 @@
 const User = require("../models/User");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+const ApiResponse = require("../utils/response");
 
 // Generate JWT Token
 const generateToken = (id) => {
@@ -18,9 +20,7 @@ const registerUser = async (req, res) => {
     // Check if user exists
     const userExists = await User.findOne({ email });
     if (userExists) {
-      return res
-        .status(400)
-        .json({ success: false, message: "User already exists" });
+      return ApiResponse.error(res, "User already exists", 400);
     }
 
     // Create user
@@ -33,7 +33,7 @@ const registerUser = async (req, res) => {
 
     sendTokenResponse(user, 201, res);
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    ApiResponse.error(res, error.message, 500);
   }
 };
 
@@ -44,51 +44,60 @@ const loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Validate email & password
     if (!email || !password) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Please provide email and password" });
+      return ApiResponse.error(res, "Please provide email and password", 400);
     }
 
-    // Check for user
     const user = await User.findOne({ email }).select("+password");
 
     if (!user) {
-      return res
-        .status(401)
-        .json({ success: false, message: "Invalid credentials" });
+      return ApiResponse.error(res, "Invalid credentials", 401);
     }
 
-    // Check password
+    // Check if membership is active
+    if (!user.membershipActive || user.membershipExpiry < new Date()) {
+      return ApiResponse.error(
+        res,
+        "Your membership has expired. Please renew.",
+        403,
+      );
+    }
+
     const isMatch = await user.matchPassword(password);
 
     if (!isMatch) {
-      return res
-        .status(401)
-        .json({ success: false, message: "Invalid credentials" });
+      return ApiResponse.error(res, "Invalid credentials", 401);
     }
+
+    // Update last login
+    user.lastLogin = new Date();
+    await user.save();
 
     sendTokenResponse(user, 200, res);
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    ApiResponse.error(res, error.message, 500);
   }
 };
 
-// Get token from model, create cookie and send response
+// Get token and send response
 const sendTokenResponse = (user, statusCode, res) => {
   const token = generateToken(user._id);
 
-  res.status(statusCode).json({
-    success: true,
-    token,
-    user: {
-      id: user._id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
+  ApiResponse.success(
+    res,
+    {
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        membershipExpiry: user.membershipExpiry,
+      },
     },
-  });
+    "Authentication successful",
+    statusCode,
+  );
 };
 
 // @desc    Get current logged in user
@@ -96,11 +105,62 @@ const sendTokenResponse = (user, statusCode, res) => {
 // @access  Private
 const getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).populate("borrowedBooks");
-    res.status(200).json({ success: true, data: user });
+    const user = await User.findById(req.user.id)
+      .populate("borrowedBooks")
+      .select("-password");
+
+    ApiResponse.success(res, user, "User profile retrieved successfully");
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    ApiResponse.error(res, error.message, 500);
   }
 };
 
-module.exports = { registerUser, loginUser, getMe };
+// @desc    Update user profile
+// @route   PUT /api/auth/update-profile
+// @access  Private
+const updateProfile = async (req, res) => {
+  try {
+    const { name, email } = req.body;
+
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { name, email },
+      { new: true, runValidators: true },
+    ).select("-password");
+
+    ApiResponse.success(res, user, "Profile updated successfully");
+  } catch (error) {
+    ApiResponse.error(res, error.message, 500);
+  }
+};
+
+// @desc    Change password
+// @route   PUT /api/auth/change-password
+// @access  Private
+const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    const user = await User.findById(req.user.id).select("+password");
+
+    const isMatch = await user.matchPassword(currentPassword);
+    if (!isMatch) {
+      return ApiResponse.error(res, "Current password is incorrect", 401);
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    ApiResponse.success(res, null, "Password changed successfully");
+  } catch (error) {
+    ApiResponse.error(res, error.message, 500);
+  }
+};
+
+module.exports = {
+  registerUser,
+  loginUser,
+  getMe,
+  updateProfile,
+  changePassword,
+};
