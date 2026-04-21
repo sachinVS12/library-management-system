@@ -1,6 +1,7 @@
 const Borrow = require("../models/Borrow");
 const Book = require("../models/Book");
 const User = require("../models/User");
+const ApiResponse = require("../utils/response");
 
 // @desc    Borrow a book
 // @route   POST /api/borrow/:bookId
@@ -10,18 +11,28 @@ const borrowBook = async (req, res) => {
     const book = await Book.findById(req.params.bookId);
 
     if (!book) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Book not found" });
+      return ApiResponse.error(res, "Book not found", 404);
     }
 
     if (book.available < 1) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Book not available" });
+      return ApiResponse.error(res, "Book is not available for borrowing", 400);
     }
 
-    // Check if user already borrowed this book and not returned
+    // Check user's borrowing limit (max 5 books at a time)
+    const activeBorrows = await Borrow.countDocuments({
+      user: req.user.id,
+      status: "borrowed",
+    });
+
+    if (activeBorrows >= 5) {
+      return ApiResponse.error(
+        res,
+        "You have reached the maximum borrowing limit of 5 books",
+        400,
+      );
+    }
+
+    // Check if user already borrowed this book
     const existingBorrow = await Borrow.findOne({
       user: req.user.id,
       book: req.params.bookId,
@@ -29,12 +40,7 @@ const borrowBook = async (req, res) => {
     });
 
     if (existingBorrow) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "You have already borrowed this book",
-        });
+      return ApiResponse.error(res, "You have already borrowed this book", 400);
     }
 
     // Calculate due date (14 days from now)
@@ -57,9 +63,18 @@ const borrowBook = async (req, res) => {
       $push: { borrowedBooks: req.params.bookId },
     });
 
-    res.status(201).json({ success: true, data: borrow });
+    const populatedBorrow = await Borrow.findById(borrow._id)
+      .populate("book", "title author isbn")
+      .populate("user", "name email");
+
+    ApiResponse.success(
+      res,
+      populatedBorrow,
+      "Book borrowed successfully",
+      201,
+    );
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    ApiResponse.error(res, error.message, 500);
   }
 };
 
@@ -71,18 +86,22 @@ const returnBook = async (req, res) => {
     let borrow = await Borrow.findById(req.params.borrowId);
 
     if (!borrow) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Borrow record not found" });
+      return ApiResponse.error(res, "Borrow record not found", 404);
+    }
+
+    // Check if user owns this borrow record
+    if (
+      borrow.user.toString() !== req.user.id &&
+      req.user.role !== "librarian"
+    ) {
+      return ApiResponse.error(res, "Not authorized to return this book", 403);
     }
 
     if (borrow.status === "returned") {
-      return res
-        .status(400)
-        .json({ success: false, message: "Book already returned" });
+      return ApiResponse.error(res, "Book already returned", 400);
     }
 
-    // Calculate fine if any
+    // Calculate fine
     const fine = borrow.calculateFine();
 
     borrow.returnDate = new Date();
@@ -100,16 +119,56 @@ const returnBook = async (req, res) => {
       $pull: { borrowedBooks: borrow.book },
     });
 
-    res.status(200).json({
-      success: true,
-      data: borrow,
-      message:
-        fine > 0
-          ? `Book returned with fine of $${fine}`
-          : "Book returned successfully",
-    });
+    const message =
+      fine > 0
+        ? `Book returned successfully. Fine amount: $${fine}`
+        : "Book returned successfully";
+
+    ApiResponse.success(res, { borrow, fine }, message);
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    ApiResponse.error(res, error.message, 500);
+  }
+};
+
+// @desc    Renew a book (extend due date)
+// @route   PUT /api/borrow/renew/:borrowId
+// @access  Private
+const renewBook = async (req, res) => {
+  try {
+    const borrow = await Borrow.findById(req.params.borrowId);
+
+    if (!borrow) {
+      return ApiResponse.error(res, "Borrow record not found", 404);
+    }
+
+    if (borrow.user.toString() !== req.user.id) {
+      return ApiResponse.error(res, "Not authorized", 403);
+    }
+
+    if (borrow.status !== "borrowed") {
+      return ApiResponse.error(res, "Cannot renew a returned book", 400);
+    }
+
+    // Check if already renewed (max 1 renewal)
+    if (borrow.renewed) {
+      return ApiResponse.error(res, "Book can only be renewed once", 400);
+    }
+
+    // Extend due date by 7 days
+    const newDueDate = new Date(borrow.dueDate);
+    newDueDate.setDate(newDueDate.getDate() + 7);
+    borrow.dueDate = newDueDate;
+    borrow.renewed = true;
+    await borrow.save();
+
+    ApiResponse.success(
+      res,
+      borrow,
+      "Book renewed successfully. New due date: " +
+        newDueDate.toLocaleDateString(),
+    );
+  } catch (error) {
+    ApiResponse.error(res, error.message, 500);
   }
 };
 
@@ -122,17 +181,29 @@ const getMyBorrowedBooks = async (req, res) => {
       .populate("book")
       .sort("-borrowDate");
 
-    // Update status for overdue books
+    // Update status for overdue books and calculate fines
+    let totalFine = 0;
     for (let borrow of borrows) {
-      if (borrow.status === "borrowed" && new Date() > borrow.dueDate) {
-        borrow.status = "overdue";
-        await borrow.save();
+      if (borrow.status === "borrowed") {
+        const fine = borrow.calculateFine();
+        if (fine > 0) {
+          borrow.status = "overdue";
+          borrow.fine = fine;
+          await borrow.save();
+          totalFine += fine;
+        }
+      } else if (borrow.fine > 0) {
+        totalFine += borrow.fine;
       }
     }
 
-    res.status(200).json({ success: true, data: borrows });
+    ApiResponse.success(
+      res,
+      { borrows, totalFine },
+      "Borrowed books retrieved successfully",
+    );
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    ApiResponse.error(res, error.message, 500);
   }
 };
 
@@ -141,15 +212,76 @@ const getMyBorrowedBooks = async (req, res) => {
 // @access  Private/Admin
 const getAllBorrows = async (req, res) => {
   try {
-    const borrows = await Borrow.find()
+    const { status, page = 1, limit = 20 } = req.query;
+
+    let query = {};
+    if (status) {
+      query.status = status;
+    }
+
+    const borrows = await Borrow.find(query)
       .populate("user", "name email")
       .populate("book", "title author isbn")
-      .sort("-borrowDate");
+      .sort("-borrowDate")
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
 
-    res.status(200).json({ success: true, data: borrows });
+    const total = await Borrow.countDocuments(query);
+
+    ApiResponse.success(
+      res,
+      {
+        borrows,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / limit),
+        },
+      },
+      "All borrow records retrieved successfully",
+    );
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    ApiResponse.error(res, error.message, 500);
   }
 };
 
-module.exports = { borrowBook, returnBook, getMyBorrowedBooks, getAllBorrows };
+// @desc    Get overdue books
+// @route   GET /api/borrow/overdue
+// @access  Private/Librarian
+const getOverdueBooks = async (req, res) => {
+  try {
+    const overdueBooks = await Borrow.find({
+      status: "borrowed",
+      dueDate: { $lt: new Date() },
+    })
+      .populate("user", "name email phone")
+      .populate("book", "title author isbn");
+
+    const totalFine = overdueBooks.reduce(
+      (sum, book) => sum + book.calculateFine(),
+      0,
+    );
+
+    ApiResponse.success(
+      res,
+      {
+        count: overdueBooks.length,
+        totalFine,
+        books: overdueBooks,
+      },
+      "Overdue books retrieved successfully",
+    );
+  } catch (error) {
+    ApiResponse.error(res, error.message, 500);
+  }
+};
+
+module.exports = {
+  borrowBook,
+  returnBook,
+  renewBook,
+  getMyBorrowedBooks,
+  getAllBorrows,
+  getOverdueBooks,
+};
