@@ -5,20 +5,28 @@ const {
   createBook,
   updateBook,
   deleteBook,
+  getBookStats,
 } = require("../controllers/bookController");
 const { protect, authorize } = require("../middleware/authMiddleware");
+const { validateBook, checkValidation } = require("../utils/validation");
 
 const router = express.Router();
 
-router
-  .route("/")
-  .get(getBooks)
-  .post(protect, authorize("librarian", "admin"), createBook);
+// Public routes
+router.get("/", getBooks);
+router.get("/stats", protect, authorize("librarian", "admin"), getBookStats);
+router.get("/:id", getBook);
 
-router
-  .route("/:id")
-  .get(getBook)
-  .put(protect, authorize("librarian", "admin"), updateBook)
-  .delete(protect, authorize("admin"), deleteBook);
+// Protected routes (Librarian/Admin only)
+router.post(
+  "/",
+  protect,
+  authorize("librarian", "admin"),
+  validateBook,
+  checkValidation,
+  createBook,
+);
+router.put("/:id", protect, authorize("librarian", "admin"), updateBook);
+router.delete("/:id", protect, authorize("admin"), deleteBook);
 
 module.exports = router;
