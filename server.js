@@ -7,12 +7,12 @@ const dotenv = require("dotenv");
 dotenv.config();
 
 // Route files
-const authRoutes = require("./routes/authRoutes");
-const bookRoutes = require("./routes/bookRoutes");
-const borrowRoutes = require("./routes/borrowRoutes");
+const authRoutes = require("./src/routes/authRoutes");
+const bookRoutes = require("./src/routes/bookRoutes");
+const borrowRoutes = require("./src/routes/borrowRoutes");
 
 // Error middleware
-const errorHandler = require("./middleware/errorMiddleware");
+const errorHandler = require("./src/middleware/errorMiddleware");
 
 const app = express();
 
