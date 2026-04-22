@@ -2,18 +2,26 @@ const express = require("express");
 const {
   borrowBook,
   returnBook,
+  renewBook,
   getMyBorrowedBooks,
   getAllBorrows,
+  getOverdueBooks,
 } = require("../controllers/borrowController");
 const { protect, authorize } = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
-router.use(protect); // All routes require authentication
+// All routes require authentication
+router.use(protect);
 
+// User routes
 router.get("/my-books", getMyBorrowedBooks);
-router.get("/all", authorize("librarian", "admin"), getAllBorrows);
 router.post("/:bookId", borrowBook);
+router.put("/renew/:borrowId", renewBook);
 router.put("/return/:borrowId", returnBook);
+
+// Admin/Librarian routes
+router.get("/all", authorize("librarian", "admin"), getAllBorrows);
+router.get("/overdue", authorize("librarian", "admin"), getOverdueBooks);
 
 module.exports = router;
