@@ -8,7 +8,7 @@ const ApiResponse = require("../utils/response");
 // @access  Private
 const borrowBook = async (req, res) => {
   try {
-    const { duration = 14 } = req.body; // duration in days, default 14
+    const { duration = 14 } = req.body;
     const book = await Book.findById(req.params.bookId);
 
     if (!book) {
@@ -227,7 +227,6 @@ const renewBook = async (req, res) => {
       res,
       {
         borrowId: borrow._id,
-        oldDueDate: borrow.dueDate,
         newDueDate,
         renewalCount: borrow.renewalCount,
         message: `Book renewed successfully. New due date: ${newDueDate.toLocaleDateString()}`,
@@ -239,57 +238,106 @@ const renewBook = async (req, res) => {
   }
 };
 
-// @desc    Report book as lost and calculate charges
-// @route   PUT /api/borrow/report-lost/:borrowId
+// @desc    Get user's borrowed books
+// @route   GET /api/borrow/my-books
 // @access  Private
-const reportLostBook = async (req, res) => {
+const getMyBorrowedBooks = async (req, res) => {
   try {
-    const borrow = await Borrow.findById(req.params.borrowId);
+    const borrows = await Borrow.find({ user: req.user.id })
+      .populate("book")
+      .sort("-borrowDate");
 
-    if (!borrow) {
-      return ApiResponse.error(res, "Borrow record not found", 404);
+    // Update status for overdue books and calculate fines
+    let totalFine = 0;
+    for (let borrow of borrows) {
+      if (borrow.status === "borrowed" && new Date() > borrow.dueDate) {
+        borrow.status = "overdue";
+        const fine = borrow.calculateFine();
+        borrow.fine = fine;
+        await borrow.save();
+        totalFine += fine;
+      } else if (borrow.fine > 0 && !borrow.finePaid) {
+        totalFine += borrow.fine;
+      }
     }
-
-    if (
-      borrow.user.toString() !== req.user.id &&
-      req.user.role !== "librarian"
-    ) {
-      return ApiResponse.error(res, "Not authorized", 403);
-    }
-
-    if (borrow.status === "returned") {
-      return ApiResponse.error(res, "Book already returned", 400);
-    }
-
-    const book = await Book.findById(borrow.book);
-    const replacementCost = book.price || 50; // Default replacement cost
-    const overdueFine = borrow.calculateFine();
-    const totalCharge = replacementCost + overdueFine;
-
-    borrow.status = "lost";
-    borrow.fine = totalCharge;
-    borrow.notes = `Book reported lost. Replacement cost: $${replacementCost}`;
-    await borrow.save();
-
-    // Update book availability
-    book.available -= 1;
-    await book.save();
-
-    // Update user's outstanding balance
-    const user = await User.findById(borrow.user);
-    user.outstandingBalance += totalCharge;
-    await user.save();
 
     ApiResponse.success(
       res,
       {
-        borrow,
-        replacementCost,
-        overdueFine,
-        totalCharge,
-        message: `Book reported as lost. Total charge: $${totalCharge} ($${replacementCost} replacement + $${overdueFine} fine)`,
+        borrows,
+        totalFine,
       },
-      "Book reported as lost",
+      "Borrowed books retrieved successfully",
+    );
+  } catch (error) {
+    ApiResponse.error(res, error.message, 500);
+  }
+};
+
+// @desc    Get all borrow records (Admin/Librarian)
+// @route   GET /api/borrow/all
+// @access  Private/Admin
+const getAllBorrows = async (req, res) => {
+  try {
+    const { status, page = 1, limit = 20 } = req.query;
+
+    let query = {};
+    if (status) {
+      query.status = status;
+    }
+
+    const borrows = await Borrow.find(query)
+      .populate("user", "name email")
+      .populate("book", "title author isbn")
+      .sort("-borrowDate")
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await Borrow.countDocuments(query);
+
+    ApiResponse.success(
+      res,
+      {
+        borrows,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / limit),
+        },
+      },
+      "All borrow records retrieved successfully",
+    );
+  } catch (error) {
+    ApiResponse.error(res, error.message, 500);
+  }
+};
+
+// @desc    Get overdue books
+// @route   GET /api/borrow/overdue
+// @access  Private/Librarian
+const getOverdueBooks = async (req, res) => {
+  try {
+    const overdueBooks = await Borrow.find({
+      status: "borrowed",
+      dueDate: { $lt: new Date() },
+    })
+      .populate("user", "name email")
+      .populate("book", "title author isbn");
+
+    let totalFine = 0;
+    for (let book of overdueBooks) {
+      totalFine += book.calculateFine();
+    }
+
+    ApiResponse.success(
+      res,
+      {
+        count: overdueBooks.length,
+        totalFine,
+        books: overdueBooks,
+      },
+      "Overdue books retrieved successfully",
     );
   } catch (error) {
     ApiResponse.error(res, error.message, 500);
@@ -345,16 +393,71 @@ const getDueDateReminders = async (req, res) => {
   }
 };
 
-// Add price field to Book model if not exists
-// Add to src/models/Book.js: price: { type: Number, default: 50 }
+// @desc    Report book as lost and calculate charges
+// @route   PUT /api/borrow/report-lost/:borrowId
+// @access  Private
+const reportLostBook = async (req, res) => {
+  try {
+    const borrow = await Borrow.findById(req.params.borrowId);
 
+    if (!borrow) {
+      return ApiResponse.error(res, "Borrow record not found", 404);
+    }
+
+    if (
+      borrow.user.toString() !== req.user.id &&
+      req.user.role !== "librarian"
+    ) {
+      return ApiResponse.error(res, "Not authorized", 403);
+    }
+
+    if (borrow.status === "returned") {
+      return ApiResponse.error(res, "Book already returned", 400);
+    }
+
+    const book = await Book.findById(borrow.book);
+    const replacementCost = book.price || 50;
+    const overdueFine = borrow.calculateFine();
+    const totalCharge = replacementCost + overdueFine;
+
+    borrow.status = "lost";
+    borrow.fine = totalCharge;
+    borrow.notes = `Book reported lost. Replacement cost: $${replacementCost}`;
+    await borrow.save();
+
+    // Update book availability
+    book.available -= 1;
+    await book.save();
+
+    // Update user's outstanding balance
+    const user = await User.findById(borrow.user);
+    user.outstandingBalance += totalCharge;
+    await user.save();
+
+    ApiResponse.success(
+      res,
+      {
+        borrow,
+        replacementCost,
+        overdueFine,
+        totalCharge,
+        message: `Book reported as lost. Total charge: $${totalCharge}`,
+      },
+      "Book reported as lost",
+    );
+  } catch (error) {
+    ApiResponse.error(res, error.message, 500);
+  }
+};
+
+// Export all functions
 module.exports = {
   borrowBook,
   returnBook,
   renewBook,
-  reportLostBook,
-  getDueDateReminders,
   getMyBorrowedBooks,
   getAllBorrows,
   getOverdueBooks,
+  getDueDateReminders,
+  reportLostBook,
 };
