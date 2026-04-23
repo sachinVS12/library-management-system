@@ -10,6 +10,8 @@ dotenv.config();
 const authRoutes = require("./src/routes/authRoutes");
 const bookRoutes = require("./src/routes/bookRoutes");
 const borrowRoutes = require("./src/routes/borrowRoutes");
+const paymentRoutes = require("./src/routes/paymentRoutes");
+const startDueDateChecker = require("./src/utils/dueDateChecker");
 
 // Error middleware
 const errorHandler = require("./src/middleware/errorMiddleware");
@@ -27,6 +29,12 @@ app.use(cors());
 app.use("/api/auth", authRoutes);
 app.use("/api/book", bookRoutes);
 app.use("/api/borrow", borrowRoutes);
+app.use("/api/payments", paymentRoutes);
+
+// Start the due date checker (in production)
+if (process.env.NODE_ENV === "production") {
+  startDueDateChecker();
+}
 
 // Root route
 app.get("/", (req, res) => {
