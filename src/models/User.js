@@ -43,6 +43,28 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: () => new Date(+new Date() + 365 * 24 * 60 * 60 * 1000),
     },
+    membershipFee: {
+      type: Number,
+      default: 50, // Annual membership fee
+    },
+    totalFines: {
+      type: Number,
+      default: 0,
+    },
+    outstandingBalance: {
+      type: Number,
+      default: 0,
+    },
+    paymentHistory: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Payment",
+      },
+    ],
+    securityDeposit: {
+      type: Number,
+      default: 100, // Security deposit
+    },
   },
   {
     timestamps: true,
